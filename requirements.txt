@@ -1,0 +1,12 @@
+albumentations
+chainer
+chainercv
+cupy
+joblib
+matplotlib
+pandas
+requests
+scipy
+six
+sklearn
+tqdm
