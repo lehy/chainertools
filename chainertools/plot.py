@@ -190,3 +190,15 @@ def plot(log_directories,
             for ax in axes[i, :]:
                 ax.set_ylim(ylim)
     return fig, axes
+
+
+def plot_dataset_image(image):
+    label = None
+    if len(image) == 2:
+        image, label = image
+    image = np.transpose(image, (1, 2, 0)) / 255.
+    plt.figure()
+    plt.imshow(image, interpolation='nearest')
+    plt.axis('off')
+    if label is not None:
+        plt.title(label)
