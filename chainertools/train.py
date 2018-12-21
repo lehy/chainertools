@@ -219,25 +219,26 @@ def resume_from_snapshot(trainer, snapshot=None):
     with reporter.scope({}):
         trainer.updater.update()
 
-    # Using "snapshot_iter*" to NOT get the automatic interruption
-    # snapshots, which are for the moment sometimes empty if we have a
-    # crash before optim starts. The real fix would be to ensure that
-    # finalize() snapshots are always valid when writing them.
-    snapshots = glob.glob(os.path.join(trainer.out, "snapshot_iter_*"))
-    if not snapshots:
-        log.info("did not find snapshot to resume from in directory %s",
-                 trainer.out)
-        return
-    sorted_snapshots = pd.Series(snapshots).str.extract(
-        r'^(?P<file>.*/[^/]*snapshot_iter_0*(?P<iteration>\d+))$')
-    sorted_snapshots['iteration'] = sorted_snapshots.iteration.astype(int)
-    sorted_snapshots = sorted_snapshots.sort_values("iteration").reset_index(
-        drop=True)
-    if sorted_snapshots.iteration.iloc[-1] == 0:
-        return
-    log.info("latest available snapshots:\n%s", sorted_snapshots.tail(7))
     if snapshot is None:
+        # Using "snapshot_iter*" to NOT get the automatic interruption
+        # snapshots, which are for the moment sometimes empty if we have a
+        # crash before optim starts. The real fix would be to ensure that
+        # finalize() snapshots are always valid when writing them.
+        snapshots = glob.glob(os.path.join(trainer.out, "snapshot_iter_*"))
+        if not snapshots:
+            log.info("did not find snapshot to resume from in directory %s",
+                     trainer.out)
+            return
+        sorted_snapshots = pd.Series(snapshots).str.extract(
+            r'^(?P<file>.*/[^/]*snapshot_iter_0*(?P<iteration>\d+))$')
+        sorted_snapshots['iteration'] = sorted_snapshots.iteration.astype(int)
+        sorted_snapshots = sorted_snapshots.sort_values("iteration").reset_index(
+            drop=True)
+        if sorted_snapshots.iteration.iloc[-1] == 0:
+            return
+        log.info("latest available snapshots:\n%s", sorted_snapshots.tail(7))
         snapshot = sorted_snapshots.file.iloc[-1]
+
     log.info("resuming from snapshot %s", snapshot)
     chainer.serializers.load_npz(snapshot, trainer)
 
@@ -277,18 +278,18 @@ def create_model_with_loss(predictor, classifier, loss_fun, accuracy_fun):
     return model
 
 
-def train(predictor,
-          data,
-          name,
-          train_batch_size=128,
-          validation_batch_size=None,
-          optimizer=None,
-          iterator='multithread',
-          classifier=chainer.links.Classifier,
-          evaluation_factor=0.1,
-          loss_fun=None,
-          accuracy_fun=None,
-          device=0):
+def trainer(predictor,
+            data,
+            name,
+            train_batch_size=128,
+            validation_batch_size=None,
+            optimizer=None,
+            iterator='multithread',
+            classifier=chainer.links.Classifier,
+            evaluation_factor=0.1,
+            loss_fun=None,
+            accuracy_fun=None,
+            device=0):
     """evaluation_factor: evaluate this many samples for each sample
     trained
     """
@@ -336,7 +337,7 @@ class UpDownLr(chainer.training.Extension):
                  max_lr,
                  factor_min_lr=0.1,
                  num_epochs_to_max=2,
-                 num_epochs_reduce=10,
+                 num_epochs_reduce=6,
                  reduction=0.3,
                  cycles_before_finetune=-1,
                  lr_attribute=None):
