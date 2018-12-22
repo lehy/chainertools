@@ -109,11 +109,15 @@ def run(command):
                 progress.update(1)
 
 
-def download_tar(url, destination):
+def download_tar(url, destination, cache_directory=None):
+    if cache_directory is None:
+        cache_directory = destination
+
     mkdir_p(destination)
+    mkdir_p(cache_directory)
 
     temp_tar_file_name = os.path.join(
-        destination,
+        cache_directory,
         hashlib.md5(url.encode('utf-8')).hexdigest())
     tar_file_name = temp_tar_file_name + '.tar'
 
