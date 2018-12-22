@@ -1,7 +1,6 @@
 albumentations
 chainer
 chainercv
-cupy
 joblib
 matplotlib
 pandas
