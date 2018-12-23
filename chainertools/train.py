@@ -1,10 +1,11 @@
-import chainer
-import copy
-import glob
-import logging
 import gc
 import os
+import copy
+import glob
+import chainer
+import logging
 import functools
+import numpy as np
 import pandas as pd
 from . import utils
 
@@ -445,3 +446,112 @@ class UpDownLr(chainer.training.Extension):
         # getattr does not like that.
         self.lr_attribute = str(serializer('lr_attribute', self.lr_attribute))
         self.base_iteration = serializer('base_iteration', self.base_iteration)
+
+
+def lr_find(
+        model,
+        datasets,
+        start_lr=1e-7,
+        end_lr=10,
+        num_iter=100,
+        num_points=100,
+        batch_size=1,
+        # test_batch_size=1,
+        out='lr_find',
+        lr_variable='lr',
+        optimizer=None,
+        use_validation=False,
+        weight_decay=None):
+    gc.collect()
+
+    model.to_gpu()
+    if optimizer is None:
+        optimizer = chainer.optimizers.MomentumSGD(lr=start_lr, momentum=0.9)
+    optimizer.setup(model)
+
+    if weight_decay is not None:
+        # This needs to be after the setup() call above.
+        optimizer.add_hook(chainer.optimizer.WeightDecay(rate=weight_decay))
+
+    out = "{}_batch{}_{}".format(out, batch_size, optimizer.__class__.__name__)
+    log.info("lr_find: output directory: %s", out)
+
+    train_iter = chainer.iterators.SerialIterator(
+        datasets.validation, batch_size=batch_size)
+
+    updater = chainer.training.updater.StandardUpdater(
+        train_iter,
+        optimizer,
+        # converter=fcis_concat_examples,
+        device=0)
+
+    trainer = chainer.training.Trainer(
+        updater, (num_iter, 'iteration'), out=out)
+
+    # lr scheduler
+    ratio = (end_lr / start_lr)**(1. / num_points)
+    trainer.extend(
+        chainer.training.extensions.ExponentialShift(
+            lr_variable, ratio, init=start_lr),
+        trigger=(max(1, num_iter // num_points), 'iteration'))
+
+    if use_validation:
+        val_iter = chainer.iterators.SerialIterator(
+            datasets.validation,
+            batch_size=batch_size,
+            repeat=False,
+            shuffle=False)
+        trainer.extend(
+            OnlineEvaluator(val_iter, model, device=0),
+            trigger=(1, 'iteration'))
+        loss_key = 'validation/main/loss'
+    else:
+        loss_key = 'main/loss'
+
+    # training extensions
+    # trainer.extend(
+    #     chainer.training.extensions.observe_lr(), trigger=(1, 'iteration'))
+    trainer.extend(
+        chainer.training.extensions.observe_value(
+            lr_variable, lambda _: getattr(optimizer, lr_variable)),
+        trigger=(1, 'iteration'))
+    trainer.extend(
+        chainer.training.extensions.LogReport(
+            log_name='log.json', trigger=(1, 'iteration')))
+
+    lowest_loss = [np.inf]
+
+    def stop_on_nan(trainer):
+        # log.info(list(trainer.observation.keys()))
+        # loss = chainer.cuda.to_cpu(trainer.observation[loss_key].data)
+        loss = trainer.observation[loss_key].get()
+        if loss < lowest_loss[0]:
+            lowest_loss[0] = loss
+        if loss > (100. * lowest_loss[0]) or not np.isfinite(loss):
+            log.warning(
+                "loss has diverged (current: %g, lowest: %g)" +
+                ", stopping training", loss, lowest_loss[0])
+            # assigning to trainer.trigger does nothing
+            trainer.stop_trigger.unit = 'iteration'
+            trainer.stop_trigger.period = 1
+
+    trainer.extend(stop_on_nan, name='stop_on_nan')
+    trainer.extend(
+        chainer.training.extensions.PrintReport([
+            'iteration',
+            # 'epoch',
+            'elapsed_time',
+            lr_variable,
+            'main/loss',
+            'validation/main/loss',
+            # 'main/rpn_loc_loss',
+            # 'main/rpn_cls_loss',
+            # 'main/roi_loc_loss',
+            # 'main/roi_cls_loss',
+            # 'main/roi_mask_loss',
+            # 'validation/main/map',
+        ]),
+        trigger=(1, 'iteration'))
+    # trainer.extend(chainer.training.extensions.ProgressBar(update_interval=1))
+    trainer.run()
+    return trainer
