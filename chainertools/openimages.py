@@ -220,7 +220,7 @@ def openimages_dataset(root,
                        augmentation=None,
                        label_zero=0.,
                        label_one=1.,
-                       version=4):
+                       version=5):
     """version arg is solely for making sure the cache is not reused
     if the implementation changes.
     """
@@ -288,7 +288,7 @@ def openimages_dataset(root,
     dataset = AlbLabeledImageDataset(
         pairs=pairs,
         root=root,
-        label_dtype=np.int32,
+        label_dtype=np.float32,
         augmentation=augmentation)
     dataset = chainer.datasets.TransformDataset(
         dataset, TransformLabeled(resize_if_needed, size=size))
@@ -362,9 +362,13 @@ def load_openimages_datasets(root='/media/rlehy/datasets/openimages-v4/bb'):
         root,
         subset='train',
         label_encoder=label_encoder,
-        augmentation=classification_augmentation())
+        augmentation=classification_augmentation(),
+        label_zero=0.1,
+        label_one=0.99)
     datasets.validation = openimages_dataset(
-        root, subset='validation', label_encoder=label_encoder)
+        root, subset='validation', label_encoder=label_encoder,
+        label_zero=0.1,
+        label_one=0.99)
 
     datasets.label_names = label_encoder.readable_classes()
     datasets.string_of_label = label_encoder.readable_label_of_encoded_label
