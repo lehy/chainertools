@@ -136,5 +136,3 @@ def download_tar(url, destination, cache_directory=None):
         "tar", "--directory", destination, "--verbose", "--totals", "-x", "-f",
         tar_file_name
     ])
-    if tar_ret != 0:
-        raise RuntimeError("tar returned non-zero: {}".format(tar_ret))
