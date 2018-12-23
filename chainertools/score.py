@@ -10,7 +10,7 @@ def f1_score(y, t, threshold_pre_sigmoid=0.):
     y = y.array
 
     pred = (xp.ravel(y) > threshold_pre_sigmoid).astype(np.int32)
-    t = xp.ravel(t)
+    t = (xp.ravel(t) > 0.5).astype(np.int32)
 
     relevant = xp.sum(pred)
     support = xp.sum(t)
