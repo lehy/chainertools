@@ -141,7 +141,7 @@ def plot(log_directories,
          figsize=(24, 16)):
     df = massage_logs(read_logs(*log_directories))
     fig, axes = plt.subplots(
-        nrows=len(ys), ncols=len(variants), figsize=figsize, sharex=True)
+        nrows=len(ys), ncols=len(variants), figsize=figsize, sharex=True, squeeze=False)
     sets = list(df.set.unique())
     assert set(variants) <= set(sets)
     palette = plt.rcParams['axes.prop_cycle'].by_key()['color']
