@@ -142,12 +142,14 @@ def plot(log_directories,
     df = massage_logs(read_logs(*log_directories))
     fig, axes = plt.subplots(
         nrows=len(ys), ncols=len(variants), figsize=figsize, sharex=True, squeeze=False)
-    sets = list(df.set.unique())
+    sets = list(set(df.set).intersection(variants))
     assert set(variants) <= set(sets)
     palette = plt.rcParams['axes.prop_cycle'].by_key()['color']
     colors = dict(zip(df.directory.unique(), palette))
     y_range_values = collections.defaultdict(list)
     for (directory, subset), group in df.groupby(['directory', 'set']):
+        if subset not in sets:
+            continue
         color = colors[directory]
         xx = group[x]
         if xx.dtype == 'timedelta64[ns]':
