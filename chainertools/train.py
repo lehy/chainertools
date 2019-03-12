@@ -58,24 +58,24 @@ class OnlineEvaluator(chainer.training.extensions.Evaluator):
 
 # Note that there is a TimeTrigger in chainer, and it probably does
 # exactly this.
-class TimeTrigger(object):
-    def __init__(self, period_s):
-        self.period_s = period_s
-        self.t_last_triggered = None
-
-    def __call__(self, trainer):
-        t = trainer.elapsed_time
-        if self.t_last_triggered is None or (
-                t - self.t_last_triggered) > self.period_s:
-            self.t_last_triggered = t
-            return True
-        else:
-            return False
-
-    def serialize(self, serializer):
-        self.period_s = serializer('period_s', self.period_s)
-        self.t_last_triggered = serializer('t_last_triggered',
-                                           self.t_last_triggered)
+#class TimeTrigger(object):
+#    def __init__(self, period_s):
+#        self.period_s = period_s
+#        self.t_last_triggered = None
+#
+#    def __call__(self, trainer):
+#        t = trainer.elapsed_time
+#        if self.t_last_triggered is None or (
+#                t - self.t_last_triggered) > self.period_s:
+#           self.t_last_triggered = t
+#            return True
+#        else:
+#            return False
+#
+#    def serialize(self, serializer):
+#        self.period_s = serializer('period_s', self.period_s)
+#        self.t_last_triggered = serializer('t_last_triggered',
+#                                           self.t_last_triggered)
 
 
 def trigger_every_iteration_until(max_iterations=256):
@@ -325,6 +325,172 @@ def trainer(predictor,
     extend_snapshot(trainer)
 
     return trainer
+
+class TimeTrigger(object):
+
+    """Trigger based on a fixed time interval.
+    This trigger accepts iterations with a given interval time.
+    Args:
+        period (float): Interval time. It is given in seconds.
+        
+    Ronan: Copied from Chainer, fixed to set next trigger time to current time + period at init.
+    """
+
+    def __init__(self, period):
+        self._period = period
+        self._next_time = None    
+        
+    def __call__(self, trainer):
+        if self._next_time is None:
+            self._next_time = trainer.elapsed_time + self._period
+        if self._next_time < trainer.elapsed_time:
+            self._next_time += self._period
+            return True
+        else:
+            return False
+
+    def serialize(self, serializer):
+        try:
+            self._next_time = serializer('next_time', self._next_time)
+        except KeyError:
+            self._next_time = None
+
+class UdSchedule(chainer.training.Extension):
+    """Same idea as UpDownLr, but monitor cost decrease instead of using a fixed number of iterations
+    before reducing the weight.
+    """
+    def __init__(self, max_lr, factor_min_lr=0.1, num_epochs_to_max=2, reduction=0.3,
+                trigger_reduction_factory=None):
+        super().__init__()
+        self.max_lr = max_lr
+        self.factor_min_lr = factor_min_lr
+        self.num_epochs_to_max = num_epochs_to_max
+        self.reduction = reduction
+        
+        self.mode = "up"
+        self.trigger_down = chainer.training.get_trigger((num_epochs_to_max, 'epoch'))
+        
+        if trigger_reduction_factory is None:
+            trigger_reduction_factory = functools.partial(chainer.training.triggers.EarlyStoppingTrigger,
+                                                  check_trigger=TimeTrigger(40*60),
+                                                  monitor='validation/main/accuracy',
+                                                  patients=1,
+                                                  max_trigger=(20, 'epoch'))
+        self.trigger_reduction_maker = trigger_reduction_factory
+        self.trigger_reduction = None
+        
+        self.num_iterations_to_max = None
+        self.lr_attribute = None
+        self.trainer = None
+        self.init_lr = None  # used for deserialization
+    
+    def get_lr(self, optimizer):
+        return getattr(optimizer, self.lr_attribute)
+
+    def set_lr(self, optimizer, lr):
+        setattr(optimizer, self.lr_attribute, lr)       
+    
+    def _init_num_iterations(self, trainer):
+        train_iter = trainer.updater.get_iterator('main')
+        size_epoch_samples = len(train_iter.dataset)
+        batch_size = train_iter.batch_size
+        size_epoch_iterations = size_epoch_samples / batch_size
+        self.num_iterations_to_max = self.num_epochs_to_max * size_epoch_iterations
+        log.info("UdSchedule: %d samples/epoch, %d samples/batch, %d iterations/epoch",
+                 size_epoch_samples, batch_size, size_epoch_iterations)
+        
+    def _init_lr_attribute(self, trainer):
+        optimizer = trainer.updater.get_optimizer('main')
+        if isinstance(optimizer, chainer.optimizers.Adam):
+            log.debug("detected Adam optimizer, adapting eta and setting alpha=1.")
+            self.lr_attribute = 'eta'
+            optimizer.alpha = 1.
+        elif utils.safe_hasattr(optimizer, 'lr'):
+            log.debug("detected optimizer with lr attribute, adapting lr")
+            self.lr_attribute = 'lr'
+        else:
+            raise ValueError("optimizer has neither lr nor alpha" +
+                             ", you must specify lr_attribute at init")
+        
+    def initialize(self, trainer):
+        self.trainer = trainer
+        self._init_num_iterations(trainer)
+        self._init_lr_attribute(trainer)
+        
+        if self.init_lr is not None:
+            self.set_lr(trainer.updater.get_optimizer('main'), self.init_lr)
+            self.init_lr = None
+        
+        self(trainer)
+    
+    def __call__(self, trainer):
+        assert self.mode in ["up", "down"]
+        assert trainer is self.trainer
+        
+        optimizer = trainer.updater.get_optimizer('main')
+        
+        if self.mode == "up":
+            alpha = float(trainer.updater.iteration) / float(self.num_iterations_to_max)
+            lr = self.max_lr * (alpha * (1. - self.factor_min_lr) + self.factor_min_lr)
+            log.debug("up: %d/%d=%g lr=%g (%g -> %g)", trainer.updater.iteration, self.num_iterations_to_max,
+                      alpha, lr, self.max_lr * self.factor_min_lr, self.max_lr)
+            self.set_lr(optimizer, lr)
+            if self.trigger_down(trainer):
+                self.mode = "down"
+                # reset the optimizer (important for Adam)
+                optimizer.setup(optimizer.target)
+        else:
+            if self.trigger_reduction is None:
+                self.trigger_reduction = self.trigger_reduction_maker()
+            if False:
+                try:
+                    log.info("current best: %g current value: %s=%s (%s), count: %d",
+                             self.trigger_reduction.best,
+                             self.trigger_reduction.monitor,
+                             self.trigger_reduction._summary.compute_mean().get(self.trigger_reduction.monitor, None),
+                             self.trigger_reduction._summary.compute_mean(),
+                             self.trigger_reduction.count)
+                    log.info("observation: %s", trainer.observation)
+                except Exception as e:
+                    log.exception(e)
+                    pass
+            if self.trigger_reduction(trainer):
+                # reset the optimizer (important for Adam)
+                optimizer.setup(optimizer.target)
+                self.set_lr(optimizer, self.get_lr(optimizer) * self.reduction)
+                log.info("reduction trigger fired, optimizer is reset and now %s=%g",
+                         self.lr_attribute, self.get_lr(optimizer))
+                self.trigger_reduction = None
+
+    def serialize(self, serializer):
+        self.max_lr = serializer('max_lr', self.max_lr)
+        self.factor_min_lr = serializer('factor_min_lr', self.factor_min_lr)
+        self.num_epochs_to_max = serializer('num_epochs_to_max',
+                                            self.num_epochs_to_max)
+        self.reduction = serializer('reduction', self.reduction)
+        # Need str() because otherwise we get an ndarray of chars and
+        # getattr does not like that.
+        self.mode = str(serializer('mode', self.mode))
+        
+        if self.trainer is None:
+            # deserializing
+            try:
+                self.init_lr = serializer('lr', 1.)
+            except:
+                log.warning("could not deserialize lr, using max value = %g", self.max_lr)
+                self.init_lr = self.max_lr
+        else:
+            # serializing
+            self.trigger_reduction            
+            
+            optimizer = self.trainer.updater.get_optimizer('main')
+            lr = serializer('lr', self.get_lr(optimizer))
+        # one cannot save the triggers and trigger factory simply like this
+        # self.trigger_down = serializer('trigger_down', self.trigger_down)
+        # self.trigger_reduction_maker = serializer('trigger_reduction_maker', self.trigger_reduction_maker)
+        # self.trigger_reduction = serializer('trigger_reduction', self.trigger_reduction)
+
+        # lr_attribute and num_iterations_to_max are recomputed in init(), no need to save them
 
 
 class UpDownLr(chainer.training.Extension):
